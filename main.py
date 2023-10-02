@@ -3,6 +3,7 @@ import nmap
 import json
 import os.path
 import subprocess
+import math
 
 # Required install
 # - OS: nmap pip3 sshpass
@@ -14,6 +15,12 @@ network = '10.0.20.0/28'
 catalog_file = 'catalog.json'
 username = 'discovery'
 password = 'discovery'
+qos = {
+    "memory": { "min": 512 },
+    "storage": { "min": 2048 },
+    "cpu": { "min": 1},
+    "scalability": { "min": 1}
+}
 
 def get_catalog():
     catalog = []
@@ -51,13 +58,35 @@ def get_metric(ip, metric):
     res = subprocess.Popen(f"sshpass -p {password} ssh  -o StrictHostKeyChecking=no {username}@{ip} {cmd}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
     return res[0].decode('utf8').replace('\n','')     
 
+def get_scalability(host):
+    return min(5, math.floor(int(host['memory']) / 512) if host['memory'] else 0)
+
 def enrich(catalog):
     for host in catalog:
         ip = host["addresses"]["ipv4"]
         host["memory"] = get_metric(ip, "memory")
         host["storage"] = get_metric(ip, "storage")
         host["cpu"] = get_metric(ip, "cpu")
+        host["scalability"] = get_scalability(host)
+        host["reliability"] = 5
+        host["availability"] = 5
     return catalog
+
+def apply_qos(catalog):
+    new_catalog = []
+    for host in catalog:
+        elegible = True
+        check_metrics = ["memory", "storage", "cpu", "scalability"]
+        for metric in check_metrics:
+            if metric not in host or not host[metric]:
+                elegible = False
+            if metric in host and host[metric] and metric in qos and "min" in qos[metric] and float(host[metric]) < qos[metric]["min"]:
+                elegible = False
+            if metric in host and host[metric] and metric in qos and "max" in qos[metric] and float(host[metric]) > qos[metric]["max"]:
+                elegible = False
+        if elegible:
+            new_catalog.append(host)        
+    return new_catalog
 
 def persist(catalog):
     with open(catalog_file, 'w') as f:
@@ -70,6 +99,7 @@ def main():
         count_before = len(catalog)
         catalog = discover(catalog)
         catalog = enrich(catalog)
+        catalog = apply_qos(catalog)
         persist(catalog)
         count_after = len(catalog)
         print ("Discovering... ", str(count_after-count_before), " hosts found", end="\n")
